@@ -107,8 +107,27 @@ class OrgMCPGateway:
                 raise PermissionError(f"Access denied: {user.email} cannot call {name}")
 
             # Rate limit check
-            if not self._rate_limiter.allow(user.email, name):
-                raise RuntimeError(f"Rate limit exceeded for {user.email}")
+            rl_result = self._rate_limiter.check(user.email, name, user.teams)
+            if not rl_result.allowed:
+                self._audit.log_call(
+                    session_id=session_id,
+                    user_email=user.email,
+                    user_teams=user.teams,
+                    tool_name=name,
+                    tool_args=arguments,
+                    result="RATE_LIMITED",
+                    duration_ms=0,
+                    success=False,
+                    error=(
+                        f"Rate limit exceeded: {rl_result.remaining_tokens} tokens left, "
+                        f"retry in {rl_result.retry_after_seconds:.1f}s"
+                    ),
+                )
+                raise RuntimeError(
+                    f"Rate limit exceeded for {user.email} on tool '{name}'. "
+                    f"Retry after {rl_result.retry_after_seconds:.1f}s. "
+                    f"Limit: {rl_result.limit}/hour."
+                )
 
             # Execute tool
             try:
