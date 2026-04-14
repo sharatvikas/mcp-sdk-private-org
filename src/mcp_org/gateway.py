@@ -15,8 +15,10 @@ from mcp.types import Tool, TextContent
 
 from mcp_org.middleware.auth import APIKeyAuthMiddleware, OIDCAuthMiddleware, TeamBasedRBAC, AuthenticatedUser
 from mcp_org.middleware.audit import AuditLogger
+from mcp_org.middleware.correlation import bind_correlation_id, get_correlation_id
 from mcp_org.middleware.rate_limit import RateLimiter
 from mcp_org.registry.loader import ToolRegistry
+from mcp_org.health import HealthServer, metrics as _metrics
 
 log = structlog.get_logger()
 
@@ -87,6 +89,11 @@ class OrgMCPGateway:
             session_id = _current_session.get() or "unknown"
             start = time.monotonic()
 
+            # Bind a unique correlation ID for this tool call so every log
+            # line in the call stack carries it automatically.
+            correlation_id = bind_correlation_id()
+            log.info("tool.called", tool=name, session=session_id, correlation_id=correlation_id)
+
             # Auth check
             if not user:
                 raise PermissionError("Unauthenticated — provide Authorization header")
@@ -133,6 +140,7 @@ class OrgMCPGateway:
             try:
                 result = await self._registry.call_tool(name, arguments)
                 duration_ms = int((time.monotonic() - start) * 1000)
+                _metrics.record_call(name, duration_ms, success=True)
                 self._audit.log_call(
                     session_id=session_id,
                     user_email=user.email,
@@ -143,9 +151,12 @@ class OrgMCPGateway:
                     duration_ms=duration_ms,
                     success=True,
                 )
-                return [TextContent(type="text", text=result)]
+                # Embed correlation ID in tool result for end-to-end traceability
+                traced = f"{result}\n[correlation_id={correlation_id}]" if result else f"[correlation_id={correlation_id}]"
+                return [TextContent(type="text", text=traced)]
             except Exception as e:
                 duration_ms = int((time.monotonic() - start) * 1000)
+                _metrics.record_call(name, duration_ms, success=False)
                 self._audit.log_call(
                     session_id=session_id,
                     user_email=user.email,
@@ -167,8 +178,26 @@ class OrgMCPGateway:
         _current_user.set(user)
         _current_session.set("stdio-session")
 
+        # Mark registry ready and publish tool count to health metrics
+        tools = await self._registry.get_all_tools()
+        _metrics.set_ready(True, tool_count=len(tools))
+
         async with stdio_server() as (read_stream, write_stream):
             await self._app.run(read_stream, write_stream, self._app.create_initialization_options())
+
+    async def run_with_health(self, health_port: int = 8080) -> None:
+        """Run stdio MCP server alongside the health/metrics HTTP server.
+
+        Use this entrypoint in Kubernetes deployments so that liveness and
+        readiness probes can reach /health and /ready while MCP runs on stdio.
+
+            asyncio.run(gateway.run_with_health(health_port=8080))
+        """
+        health_server = HealthServer(gateway=self)
+        await asyncio.gather(
+            self.run_stdio(),
+            health_server.start(port=health_port),
+        )
 
 
 # Context vars for per-request user identity (thread-safe)
