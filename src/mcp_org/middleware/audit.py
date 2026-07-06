@@ -6,8 +6,7 @@ import json
 import os
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -62,7 +61,7 @@ class AuditLogger:
         safe_args = _redact_sensitive(tool_args)
 
         entry = AuditEntry(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             session_id=session_id,
             user_email=user_email,
             user_teams=user_teams,
@@ -123,7 +122,7 @@ class AuditLogger:
             import boto3
             cw = boto3.client("logs")
             log_group = os.environ.get("MCP_AUDIT_LOG_GROUP", "/mcp-server/audit")
-            log_stream = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+            log_stream = datetime.now(UTC).strftime("%Y/%m/%d")
 
             cw.put_log_events(
                 logGroupName=log_group,

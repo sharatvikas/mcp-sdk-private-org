@@ -120,6 +120,145 @@ async def deploy_service(service: str, version: str, environment: str) -> str:
 
 ---
 
+## Federation Gateway: One Front Door for the Whole MCP Fleet
+
+Once an org has more than one internal MCP server, pointing every client at every
+server stops scaling: N clients × M servers means N×M credentials, N×M audit
+trails, and no single place to enforce policy. The **federation gateway**
+(`mcp_org/proxy.py`) collapses that to one connection per client:
+
+```
+   Claude Desktop        VS Code / Cursor        Slack bot
+        │                       │                    │
+        └───────────────────────┼────────────────────┘
+                                │  one MCP endpoint (stdio / SSE)
+                                ▼
+        ┌───────────────────────────────────────────────┐
+        │                 GatewayProxy                  │
+        │                                               │
+        │   auth (OIDC / API key)                       │
+        │     → server-level team gate (allowed_teams)  │
+        │       → tool-level RBAC (fnmatch rules)       │
+        │         → token-bucket rate limit             │
+        │           → audit log + correlation ID        │
+        │                                               │
+        │   ┌─────────────────────────────────────┐     │
+        │   │ ServerRegistry (gateway.yaml,       │     │
+        │   │ validated, hot-reloaded)            │     │
+        │   └─────────────────────────────────────┘     │
+        └───────┬───────────────┬───────────────┬───────┘
+                │ stdio         │ SSE           │ streamable HTTP
+                │ (subprocess)  │               │
+                ▼               ▼               ▼
+        ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+        │  runbooks    │ │  incidents   │ │   deploys    │
+        │  MCP server  │ │  MCP server  │ │  MCP server  │
+        └──────────────┘ └──────────────┘ └──────────────┘
+         namespace:        namespace:        namespace:
+         runbooks__*       incidents__*      deploy__*
+```
+
+**How a call flows.** The client sees one aggregate catalog with namespaced
+tool names (`runbooks__search_runbooks`, `deploy__trigger_deploy`). A call to
+`deploy__trigger_deploy` is resolved by prefix to the `deploys` server, passes
+the four policy gates above, then is proxied over the downstream session with
+the audit context (`correlation_id`, `principal`, `teams`) attached as MCP
+`_meta` — so downstream logs join up with gateway logs end to end. Results
+(including structured content and downstream `isError`) pass through untouched.
+
+**Downstream health.** Each downstream connection is supervised: MCP pings at
+`health_check_interval_seconds`, reconnect with exponential backoff (1s → 60s)
+when a subprocess dies or a stream drops. Unhealthy servers vanish from the
+catalog and calls to them return a structured `downstream_unavailable` error
+instead of hanging. Per-server state is exported as the
+`mcp_gateway_downstream_up` Prometheus gauge and via `downstream_health()`.
+
+**Rate limiting.** Token buckets per principal + per namespaced tool
+(sustained hourly rate + burst), with team multipliers and per-tool overrides.
+A limited call returns a structured MCP error with `retry_after_seconds`,
+increments `mcp_gateway_rate_limited_total`, and is written to the audit log
+as `RATE_LIMITED`.
+
+### Configuration
+
+One YAML file drives the gateway (see [`config/gateway.example.yaml`](config/gateway.example.yaml)):
+
+```yaml
+gateway:
+  name: org-mcp-gateway-proxy
+  namespace_separator: "__"          # keeps tool names in [a-zA-Z0-9_-]
+  hot_reload_interval_seconds: 30
+
+rate_limits:
+  default_hourly: 200
+  default_burst: 20
+  team_overrides:
+    sre-team: { hourly_multiplier: 5.0, burst_multiplier: 3.0 }
+  tool_overrides:
+    deploy__trigger_deploy: { hourly: 10, burst: 2 }
+
+rbac_rules:                          # tool-level, fnmatch on namespaced names
+  sre-team: ["*"]
+  dev-team: ["runbooks__*", "incidents__get_*"]
+  "*": ["runbooks__search_runbooks"]
+
+servers:                             # hot-reloadable: edit file, no restart
+  - name: runbooks
+    namespace: runbooks
+    transport: stdio
+    command: python
+    args: ["-m", "runbooks_mcp_server"]
+    allowed_teams: ["*"]
+  - name: incidents
+    namespace: incidents
+    transport: sse
+    url: http://incident-mcp.internal:8080/sse
+    allowed_teams: [sre-team, dev-team]
+  - name: deploys
+    namespace: deploy
+    transport: streamable-http
+    url: https://deploy-mcp.internal/mcp
+    allowed_teams: [sre-team]
+```
+
+Config is validated on load — every error is reported at once, and a bad hot
+reload is rejected while the previous good config stays active. The registry
+is also fully programmatic:
+
+```python
+from mcp_org.registry import ServerRegistry, DownstreamServerSpec
+from mcp_org.proxy import GatewayProxy
+
+registry = ServerRegistry.from_file("gateway.yaml")     # or ServerRegistry([specs...])
+registry.register(DownstreamServerSpec(
+    name="chaos", namespace="chaos", transport="stdio",
+    command="/opt/chaos-mcp/bin/server", allowed_teams=("sre-team",),
+))
+
+proxy = GatewayProxy.from_config("gateway.yaml")
+# python -m mcp_org.proxy gateway.yaml   ← CLI entrypoint (mcp-org-proxy)
+```
+
+### Gateway deployment notes
+
+- **Kubernetes**: run `mcp-org-proxy` with the config in a ConfigMap mounted at
+  `MCP_GATEWAY_CONFIG`. Hot reload picks up ConfigMap updates without a pod
+  restart. Point liveness/readiness at the existing health server (`/health`,
+  `/ready`); scrape `/metrics` for `mcp_gateway_downstream_up`,
+  `mcp_gateway_rate_limited_total`, `mcp_gateway_rbac_denied_total`, and
+  per-tool latency percentiles.
+- **stdio downstreams** run as child processes of the gateway pod — package
+  their runtimes into the gateway image (or use SSE/streamable-HTTP downstreams
+  as sidecars/services and keep the gateway image slim).
+- **Blast radius**: one crashed downstream only removes its namespace from the
+  catalog; the supervisor reconnects with backoff while everything else keeps
+  serving. Gateway boot does not block on unreachable downstreams.
+- **Rate-limit state is in-memory per gateway instance.** Run one replica, or
+  accept per-replica quotas, or swap the `RateLimiter` for a Redis-backed
+  implementation before scaling horizontally.
+
+---
+
 ## Reference Implementation: DevOps Toolbox MCP
 
 A fully-featured example server with these tools pre-built:
@@ -166,31 +305,27 @@ docker compose up -d
 mcp-sdk-private-org/
 ├── src/
 │   └── mcp_org/
-│       ├── gateway.py          # Main MCP gateway server
+│       ├── gateway.py          # Single-server MCP gateway (local tool handlers)
+│       ├── proxy.py            # Federation gateway: multiplexes downstream MCP servers
+│       ├── health.py           # /health /ready /metrics HTTP server + metrics registry
 │       ├── middleware/
-│       │   ├── auth.py         # OIDC, API key auth
-│       │   ├── rbac.py         # Team-based access control
-│       │   ├── audit.py        # Audit logging to S3/CloudWatch
-│       │   └── rate_limit.py   # Per-tenant rate limiting
+│       │   ├── auth.py         # OIDC + API key auth, team-based RBAC
+│       │   ├── audit.py        # Audit logging to stdout/file/S3/CloudWatch
+│       │   ├── correlation.py  # Correlation IDs bound to structlog context
+│       │   └── rate_limit.py   # Token-bucket rate limiting (principal × tool)
 │       ├── registry/
-│       │   ├── loader.py       # Dynamic tool loading
-│       │   └── schema.py       # Tool registration schema
-│       └── tools/              # Example tool implementations
-│           ├── pagerduty.py
-│           ├── jira.py
-│           ├── github.py
-│           └── kubernetes.py
-├── deployments/
-│   ├── kubernetes/             # Helm chart
-│   ├── lambda/                 # Terraform for Lambda deployment
-│   └── docker-compose.yml
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── ADDING_TOOLS.md         # Guide for adding new tools
-│   ├── AUTH_SETUP.md           # OIDC/SAML configuration guide
-│   └── COMPLIANCE.md           # Audit log schema + retention
-└── examples/
-    └── devops-toolbox/         # Full reference implementation
+│       │   ├── loader.py       # Dynamic tool handler loading (plugins)
+│       │   └── servers.py      # Downstream server registry (YAML/JSON, hot reload)
+│       └── tools/              # Reference tool implementations
+│           ├── incident_search.py
+│           ├── postmortem.py
+│           ├── runbooks.py
+│           ├── audit_analytics.py
+│           └── deployment_tracker.py
+├── config/
+│   └── gateway.example.yaml    # Federation gateway config example
+└── tests/                      # 171 tests: routing, RBAC, rate limits, registry,
+                                # health probes, end-to-end in-memory MCP round-trips
 ```
 
 ---
@@ -218,6 +353,12 @@ The official SDK handles the protocol. This project handles everything else that
 - [x] Team-based RBAC
 - [x] Audit logging to S3
 - [x] Dynamic tool registry
+- [x] Token-bucket rate limiting (per principal × tool, team multipliers)
+- [x] Correlation IDs + health/readiness probes + Prometheus metrics
+- [x] Federation gateway: namespace routing to downstream MCP servers
+- [x] Downstream server registry with validation + hot reload
+- [x] Downstream health checks with reconnect/backoff
+- [ ] Redis-backed rate limiter for horizontal gateway scaling
 - [ ] SAML 2.0 support
 - [ ] HashiCorp Vault integration for secrets
 - [ ] Web UI for audit log exploration

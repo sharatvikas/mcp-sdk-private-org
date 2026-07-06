@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -39,7 +39,7 @@ async def list_recent_deployments(arguments: dict[str, Any]) -> str:
     repo_filter = arguments.get("repo", "")
     include_argocd = bool(arguments.get("include_argocd", True))
 
-    since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    since = datetime.now(UTC) - timedelta(hours=hours_back)
     deployments: list[dict] = []
 
     # GitHub Deployments API
@@ -201,7 +201,7 @@ async def correlate_deployment_with_incident(arguments: dict[str, Any]) -> str:
         return json.dumps({"error": "incident_start is required (ISO 8601 format)"})
 
     try:
-        incident_start = datetime.fromisoformat(incident_start_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+        incident_start = datetime.fromisoformat(incident_start_str.rstrip("Z")).replace(tzinfo=UTC)
     except ValueError as e:
         return json.dumps({"error": f"Invalid incident_start format: {e}"})
 
@@ -220,7 +220,7 @@ async def correlate_deployment_with_incident(arguments: dict[str, Any]) -> str:
         if not dep_time_str:
             continue
         try:
-            dep_time = datetime.fromisoformat(dep_time_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+            dep_time = datetime.fromisoformat(dep_time_str.rstrip("Z")).replace(tzinfo=UTC)
         except ValueError:
             continue
 
@@ -302,7 +302,7 @@ async def _fetch_github_deployments(
                     for dep in r.json():
                         created = dep.get("created_at", "")
                         try:
-                            dep_time = datetime.fromisoformat(created.rstrip("Z")).replace(tzinfo=timezone.utc)
+                            dep_time = datetime.fromisoformat(created.rstrip("Z")).replace(tzinfo=UTC)
                             if dep_time < since:
                                 continue
                         except ValueError:
@@ -355,7 +355,7 @@ async def _fetch_argocd_syncs(since: datetime, environment: str) -> list[dict]:
                 for sync in app.get("status", {}).get("history", []):
                     deployed_at = sync.get("deployedAt", "")
                     try:
-                        dep_time = datetime.fromisoformat(deployed_at.rstrip("Z")).replace(tzinfo=timezone.utc)
+                        dep_time = datetime.fromisoformat(deployed_at.rstrip("Z")).replace(tzinfo=UTC)
                         if dep_time < since:
                             continue
                     except (ValueError, AttributeError):

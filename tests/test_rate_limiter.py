@@ -9,11 +9,10 @@ import pytest
 from mcp_org.middleware.rate_limit import (
     RateLimitConfig,
     RateLimiter,
+    TeamOverride,
     TokenBucket,
     ToolQuota,
-    TeamOverride,
 )
-
 
 # ─── TokenBucket Unit Tests ───────────────────────────────────────────────────
 
@@ -56,7 +55,11 @@ class TestTokenBucket:
 
     def test_reset_at_in_future(self):
         bucket = TokenBucket(hourly=100, burst=10)
-        assert bucket.reset_at_timestamp() >= time.time()
+        # Capture the reference instant BEFORE the call: a full bucket's
+        # reset time is "now", so comparing against a later time.time()
+        # is racy at microsecond resolution.
+        before = time.time()
+        assert bucket.reset_at_timestamp() >= before
 
     def test_retry_after_reasonable(self):
         bucket = TokenBucket(hourly=3600, burst=0)  # 1 token/second

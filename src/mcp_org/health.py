@@ -79,9 +79,43 @@ class MetricsRegistry:
         self._start_time = time.monotonic()
         self._gateway_ready = False
         self._registry_tool_count = 0
+        # Generic labelled counters/gauges, e.g. rate-limit denials or
+        # downstream health. Keyed by (metric_name, sorted label tuple).
+        self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], float] = defaultdict(float)
+        self._gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        self._metric_help: dict[str, str] = {}
 
     def record_call(self, tool_name: str, duration_ms: float, success: bool) -> None:
         self._tools[tool_name].record(duration_ms, success)
+
+    def inc_counter(self, name: str, amount: float = 1.0, help_text: str = "", **labels: str) -> None:
+        """Increment a labelled counter (created on first use)."""
+        key = (name, tuple(sorted((k, str(v)) for k, v in labels.items())))
+        self._counters[key] += amount
+        if help_text:
+            self._metric_help.setdefault(name, help_text)
+
+    def set_gauge(self, name: str, value: float, help_text: str = "", **labels: str) -> None:
+        """Set a labelled gauge to an absolute value."""
+        key = (name, tuple(sorted((k, str(v)) for k, v in labels.items())))
+        self._gauges[key] = value
+        if help_text:
+            self._metric_help.setdefault(name, help_text)
+
+    def get_counter(self, name: str, **labels: str) -> float:
+        key = (name, tuple(sorted((k, str(v)) for k, v in labels.items())))
+        return self._counters.get(key, 0.0)
+
+    def get_gauge(self, name: str, **labels: str) -> float | None:
+        key = (name, tuple(sorted((k, str(v)) for k, v in labels.items())))
+        return self._gauges.get(key)
+
+    @staticmethod
+    def _render_labels(labels: tuple[tuple[str, str], ...]) -> str:
+        if not labels:
+            return ""
+        inner = ",".join(f'{k}="{v}"' for k, v in labels)
+        return "{" + inner + "}"
 
     def set_ready(self, ready: bool, tool_count: int = 0) -> None:
         self._gateway_ready = ready
@@ -147,6 +181,20 @@ class MetricsRegistry:
         ]
         for name, m in sorted(self._tools.items()):
             lines.append(f'mcp_tool_latency_p99_ms{{tool="{name}"}} {m.p99():.2f}')
+
+        # Generic labelled counters and gauges (grouped by metric name)
+        for kind, store in (("counter", self._counters), ("gauge", self._gauges)):
+            by_name: dict[str, list[tuple[tuple[tuple[str, str], ...], float]]] = defaultdict(list)
+            for (metric_name, labels), value in store.items():
+                by_name[metric_name].append((labels, value))
+            for metric_name in sorted(by_name):
+                lines += [
+                    "",
+                    f"# HELP {metric_name} {self._metric_help.get(metric_name, metric_name)}",
+                    f"# TYPE {metric_name} {kind}",
+                ]
+                for labels, value in sorted(by_name[metric_name]):
+                    lines.append(f"{metric_name}{self._render_labels(labels)} {value:g}")
 
         return "\n".join(lines) + "\n"
 

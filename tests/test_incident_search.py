@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC
+
 import pytest
 
 os.environ.setdefault("AUTH_MODE", "apikey")
@@ -128,6 +130,14 @@ async def test_limit_respected(tmp_path):
     assert len(data["results"]) <= 3
 
 
+def _iso_days_ago(days: int, hour_offset: float = 0.0) -> str:
+    """ISO timestamp *days* ago (+ optional hours) — keeps stats tests inside the lookback window."""
+    from datetime import datetime, timedelta
+
+    ts = datetime.now(UTC) - timedelta(days=days) + timedelta(hours=hour_offset)
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @pytest.mark.asyncio
 async def test_get_incident_stats_groups_by_service(tmp_path):
     """Stats aggregation counts incidents per service."""
@@ -137,24 +147,24 @@ async def test_get_incident_stats_groups_by_service(tmp_path):
             "title": "Payment failure",
             "affected_services": ["payment-service"],
             "severity": "SEV1",
-            "created_at": "2024-03-15T10:00:00Z",
-            "resolved_at": "2024-03-15T11:00:00Z",
+            "created_at": _iso_days_ago(3),
+            "resolved_at": _iso_days_ago(3, hour_offset=1),
         },
         {
             "id": "INC-002",
             "title": "Payment timeout",
             "affected_services": ["payment-service"],
             "severity": "SEV2",
-            "created_at": "2024-03-14T10:00:00Z",
-            "resolved_at": "2024-03-14T10:30:00Z",
+            "created_at": _iso_days_ago(4),
+            "resolved_at": _iso_days_ago(4, hour_offset=0.5),
         },
         {
             "id": "INC-003",
             "title": "Auth service down",
             "affected_services": ["auth-service"],
             "severity": "SEV1",
-            "created_at": "2024-03-13T10:00:00Z",
-            "resolved_at": "2024-03-13T12:00:00Z",
+            "created_at": _iso_days_ago(5),
+            "resolved_at": _iso_days_ago(5, hour_offset=2),
         },
     ]
     index_file = tmp_path / "incidents.json"
@@ -180,8 +190,8 @@ async def test_get_incident_stats_calculates_mttr(tmp_path):
             "title": "DB outage",
             "affected_services": ["db-service"],
             "severity": "SEV1",
-            "created_at": "2024-03-15T10:00:00Z",
-            "resolved_at": "2024-03-15T12:00:00Z",  # 120 min
+            "created_at": _iso_days_ago(2),
+            "resolved_at": _iso_days_ago(2, hour_offset=2),  # 120 min
         },
     ]
     index_file = tmp_path / "incidents.json"

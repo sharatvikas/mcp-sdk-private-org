@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +21,6 @@ from mcp_org.middleware.auth import (
     OIDCAuthMiddleware,
     TeamBasedRBAC,
 )
-
 
 # ── APIKeyAuthMiddleware ───────────────────────────────────────────────────────
 
@@ -396,7 +394,6 @@ class TestAuthRBACIntegration:
         api_auth = APIKeyAuthMiddleware(valid_keys={
             "sre-key": {"email": "sre@sovrn.com", "name": "SRE", "teams": ["sre-team"]},
         })
-        rbac = TeamBasedRBAC(rules={"sre-team": ["deploy_*"]})
 
         user = await api_auth.authenticate("wrong-key")
         assert user is None

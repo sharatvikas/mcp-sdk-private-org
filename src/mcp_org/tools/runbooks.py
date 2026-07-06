@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -212,7 +212,7 @@ class RunbookToolHandler(ToolHandler):
                 preview = path.read_text()[:200].replace("\n", " ").strip()
                 lines.append(f"   > {preview}...")
 
-        lines.append(f"\nUse `get_runbook` with the filename (without .md) to fetch full content.")
+        lines.append("\nUse `get_runbook` with the filename (without .md) to fetch full content.")
         return "\n".join(lines)
 
     def _get(self, name: str) -> str:

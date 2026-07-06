@@ -34,8 +34,6 @@ import os
 import time
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Optional
-
 
 # ─── Rate Limit Outcome ──────────────────────────────────────────────────────
 
@@ -157,7 +155,7 @@ class RateLimitConfig:
     tool_overrides: dict[str, ToolQuota] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls) -> "RateLimitConfig":
+    def from_env(cls) -> RateLimitConfig:
         raw = os.environ.get("RATE_LIMIT_CONFIG", "")
         if not raw:
             # Fall back to individual env vars for backward compatibility
@@ -178,17 +176,27 @@ class RateLimitConfig:
         except json.JSONDecodeError as e:
             raise ValueError(f"RATE_LIMIT_CONFIG is not valid JSON: {e}") from e
 
-        team_overrides = {
-            team: TeamOverride(**override)
-            for team, override in data.get("team_overrides", {}).items()
-        }
-        tool_overrides = {
-            tool: ToolQuota(**quota)
-            for tool, quota in data.get("tool_overrides", {}).items()
-        }
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RateLimitConfig:
+        """Build a config from an already-parsed dict (e.g. a gateway YAML section)."""
+        if not isinstance(data, dict):
+            raise ValueError(f"rate limit config must be a mapping, got {type(data).__name__}")
+        try:
+            team_overrides = {
+                team: TeamOverride(**override)
+                for team, override in data.get("team_overrides", {}).items()
+            }
+            tool_overrides = {
+                tool: ToolQuota(**quota)
+                for tool, quota in data.get("tool_overrides", {}).items()
+            }
+        except TypeError as e:
+            raise ValueError(f"invalid rate limit override: {e}") from e
         return cls(
-            default_hourly=data.get("default_hourly", 200),
-            default_burst=data.get("default_burst", 20),
+            default_hourly=int(data.get("default_hourly", 200)),
+            default_burst=int(data.get("default_burst", 20)),
             team_overrides=team_overrides,
             tool_overrides=tool_overrides,
         )
@@ -208,11 +216,14 @@ class RateLimiter:
     Tool overrides set fixed hourly/burst for specific tool names.
     """
 
-    def __init__(self, config: Optional[RateLimitConfig] = None) -> None:
+    def __init__(self, config: RateLimitConfig | None = None) -> None:
         self._config = config or RateLimitConfig.from_env()
         # buckets[user_email][bucket_key] = TokenBucket
         self._buckets: dict[str, dict[str, TokenBucket]] = {}
         self._lock = Lock()
+        # Decision counters (per tool) for metrics scraping
+        self._allowed_total: dict[str, int] = {}
+        self._denied_total: dict[str, int] = {}
 
     def _resolve_quota(self, user_email: str, tool_name: str, user_teams: list[str]) -> ToolQuota:
         """Determine the effective quota for (user, tool)."""
@@ -258,7 +269,7 @@ class RateLimiter:
         self,
         user_email: str,
         tool_name: str,
-        user_teams: Optional[list[str]] = None,
+        user_teams: list[str] | None = None,
     ) -> RateLimitResult:
         """
         Check and consume a rate limit token for (user, tool).
@@ -280,6 +291,10 @@ class RateLimiter:
 
         allowed, remaining, retry_after = bucket.consume()
 
+        with self._lock:
+            counter = self._allowed_total if allowed else self._denied_total
+            counter[tool_name] = counter.get(tool_name, 0) + 1
+
         return RateLimitResult(
             allowed=allowed,
             remaining_tokens=remaining,
@@ -289,11 +304,11 @@ class RateLimiter:
             bucket_key=f"{user_email}/{bucket_key}",
         )
 
-    def allow(self, user_email: str, tool_name: str, user_teams: Optional[list[str]] = None) -> bool:
+    def allow(self, user_email: str, tool_name: str, user_teams: list[str] | None = None) -> bool:
         """Convenience wrapper — returns True if call is allowed."""
         return self.check(user_email, tool_name, user_teams).allowed
 
-    def get_remaining(self, user_email: str, tool_name: str, user_teams: Optional[list[str]] = None) -> int:
+    def get_remaining(self, user_email: str, tool_name: str, user_teams: list[str] | None = None) -> int:
         """Return approximate remaining tokens without consuming."""
         teams = user_teams or []
         quota = self._resolve_quota(user_email, tool_name, teams)
@@ -301,9 +316,8 @@ class RateLimiter:
         bucket = self._get_or_create_bucket(user_email, bucket_key, quota)
         return bucket.peek_remaining()
 
-    def get_all_quotas(self, user_email: str, user_teams: Optional[list[str]] = None) -> dict[str, dict]:
+    def get_all_quotas(self, user_email: str, user_teams: list[str] | None = None) -> dict[str, dict]:
         """Return a snapshot of all known buckets for a user (for admin/debug)."""
-        teams = user_teams or []
         with self._lock:
             user_buckets = self._buckets.get(user_email, {})
 
@@ -340,8 +354,14 @@ class RateLimiter:
                 for bucket in user_buckets.values()
                 if bucket.peek_remaining() == 0
             )
+            allowed_total = sum(self._allowed_total.values())
+            denied_total = sum(self._denied_total.values())
+            denied_by_tool = dict(self._denied_total)
         return {
             "tracked_users": total_users,
             "tracked_buckets": total_buckets,
             "users_currently_throttled": throttled_users,
+            "allowed_total": allowed_total,
+            "denied_total": denied_total,
+            "denied_by_tool": denied_by_tool,
         }

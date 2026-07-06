@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter, defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-
 
 _AUDIT_LOG_FILE = os.environ.get("MCP_AUDIT_LOG_FILE", "/var/log/mcp-gateway/audit.jsonl")
 
@@ -30,7 +29,7 @@ def _load_entries(
     if not path.exists():
         return []
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours_back)
     entries = []
 
     with path.open() as f:
@@ -41,7 +40,7 @@ def _load_entries(
             try:
                 entry = json.loads(line)
                 ts_str = entry.get("timestamp", "")
-                ts = datetime.fromisoformat(ts_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+                ts = datetime.fromisoformat(ts_str.rstrip("Z")).replace(tzinfo=UTC)
                 if ts >= cutoff:
                     entries.append(entry)
             except (json.JSONDecodeError, ValueError):

@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from functools import wraps
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
@@ -51,7 +50,7 @@ class OIDCAuthMiddleware:
                 audience=self._client_id,
                 issuer=self._issuer,
             )
-        except jwt.InvalidTokenError as e:
+        except jwt.InvalidTokenError:
             return None
 
         email = payload.get("email", "")

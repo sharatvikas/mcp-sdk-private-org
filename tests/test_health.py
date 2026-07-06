@@ -2,11 +2,8 @@
 
 import asyncio
 import json
-import time
 
-import pytest
-
-from mcp_org.health import MetricsRegistry, HealthServer, _percentile
+from mcp_org.health import HealthServer, MetricsRegistry, _percentile
 
 
 class TestPercentile:
@@ -109,13 +106,13 @@ class TestHealthServerResponses:
                 if not chunk:
                     break
                 response += chunk
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         writer.close()
         text = response.decode(errors="replace")
         lines = text.split("\r\n")
         status = int(lines[0].split()[1]) if lines else 0
-        ct = next((l.split(": ", 1)[1] for l in lines if l.lower().startswith("content-type:")), "")
+        ct = next((ln.split(": ", 1)[1] for ln in lines if ln.lower().startswith("content-type:")), "")
         body = text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in text else ""
         return status, ct, body
 

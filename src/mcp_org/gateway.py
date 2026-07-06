@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import time
-from contextlib import asynccontextmanager
 
 import structlog
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
-from mcp_org.middleware.auth import APIKeyAuthMiddleware, OIDCAuthMiddleware, TeamBasedRBAC, AuthenticatedUser
+from mcp_org.health import HealthServer
+from mcp_org.health import metrics as _metrics
 from mcp_org.middleware.audit import AuditLogger
-from mcp_org.middleware.correlation import bind_correlation_id, get_correlation_id
+from mcp_org.middleware.auth import APIKeyAuthMiddleware, AuthenticatedUser, OIDCAuthMiddleware, TeamBasedRBAC
+from mcp_org.middleware.correlation import bind_correlation_id
 from mcp_org.middleware.rate_limit import RateLimiter
 from mcp_org.registry.loader import ToolRegistry
-from mcp_org.health import HealthServer, metrics as _metrics
 
 log = structlog.get_logger()
 
@@ -39,6 +39,8 @@ class OrgMCPGateway:
         self._setup_auth()
         self._setup_rbac()
         self._registry = ToolRegistry()
+        self._registry.load_builtins()
+        self._registry.load_plugins()
         self._audit = AuditLogger(
             destination=os.environ.get("AUDIT_DESTINATION", "stdout"),
             s3_bucket=os.environ.get("MCP_AUDIT_S3_BUCKET"),
@@ -201,7 +203,6 @@ class OrgMCPGateway:
 
 
 # Context vars for per-request user identity (thread-safe)
-import contextvars
 _current_user: contextvars.ContextVar[AuthenticatedUser | None] = contextvars.ContextVar("current_user", default=None)
 _current_session: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_session", default=None)
 

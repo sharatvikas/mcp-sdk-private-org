@@ -1,9 +1,7 @@
 """Tests for the request correlation ID middleware."""
 
 import asyncio
-import contextvars
 
-import pytest
 import structlog
 
 from mcp_org.middleware.correlation import (
@@ -11,7 +9,6 @@ from mcp_org.middleware.correlation import (
     clear_correlation_id,
     get_correlation_id,
     inject_into_headers,
-    correlation_id,
 )
 
 

@@ -6,7 +6,7 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -95,7 +95,7 @@ async def search_incidents(arguments: dict[str, Any]) -> str:
         return json.dumps({"results": [], "message": "No incident history available"})
 
     # Apply filters
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     filtered = []
     for inc in incidents:
         if severity_filter != "ALL" and inc.get("severity", "").upper() != severity_filter:
@@ -104,7 +104,7 @@ async def search_incidents(arguments: dict[str, Any]) -> str:
             created = inc.get("created_at") or inc.get("started_at", "")
             if created:
                 try:
-                    ts = datetime.fromisoformat(created.rstrip("Z")).replace(tzinfo=timezone.utc)
+                    ts = datetime.fromisoformat(created.rstrip("Z")).replace(tzinfo=UTC)
                     age_days = (now - ts).days
                     if age_days > days_back:
                         continue
@@ -113,7 +113,7 @@ async def search_incidents(arguments: dict[str, Any]) -> str:
         filtered.append(inc)
 
     if not filtered:
-        return json.dumps({"results": [], "message": f"No incidents match filters"})
+        return json.dumps({"results": [], "message": "No incidents match filters"})
 
     # Score by semantic similarity
     query_embedding = await _embed(query)
@@ -222,13 +222,13 @@ async def get_incident_stats(arguments: dict[str, Any]) -> str:
         index_path = os.environ.get("INCIDENT_INDEX_PATH", "data/incidents.json")
         incidents = _load_incidents(index_path)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stats: dict[str, dict] = {}
 
     for inc in incidents:
         created_str = inc.get("created_at") or inc.get("started_at", "")
         try:
-            created = datetime.fromisoformat(created_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+            created = datetime.fromisoformat(created_str.rstrip("Z")).replace(tzinfo=UTC)
         except (ValueError, AttributeError):
             continue
         if (now - created).days > days:
@@ -247,7 +247,7 @@ async def get_incident_stats(arguments: dict[str, Any]) -> str:
         resolved_str = inc.get("resolved_at", "")
         if resolved_str:
             try:
-                resolved = datetime.fromisoformat(resolved_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+                resolved = datetime.fromisoformat(resolved_str.rstrip("Z")).replace(tzinfo=UTC)
                 duration = (resolved - created).total_seconds() / 60
                 stats[key]["total_duration_minutes"] += duration
                 stats[key]["resolved_count"] += 1
@@ -281,7 +281,7 @@ async def _fetch_pagerduty_incidents(days: int) -> list[dict]:
         return []
     from datetime import timedelta
 
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(

@@ -1,0 +1,71 @@
+# Example gateway config — one file drives the whole federation gateway.
+#
+#   MCP_GATEWAY_CONFIG=config/gateway.yaml python -m mcp_org.proxy
+#
+# The `servers` section is hot-reloadable: edit this file on a running
+# gateway and it reconciles downstream connections within
+# `hot_reload_interval_seconds` (no restart, no dropped healthy servers).
+
+gateway:
+  name: org-mcp-gateway-proxy
+  # Separator between the server namespace and the downstream tool name.
+  # "__" keeps aggregate tool names inside the [a-zA-Z0-9_-] charset most
+  # MCP clients enforce: runbooks__search_runbooks
+  namespace_separator: "__"
+  hot_reload_interval_seconds: 30
+
+# Token-bucket rate limits, per principal + per namespaced tool.
+rate_limits:
+  default_hourly: 200
+  default_burst: 20
+  team_overrides:
+    sre-team: { hourly_multiplier: 5.0, burst_multiplier: 3.0 }
+    dev-team: { hourly_multiplier: 2.0 }
+  tool_overrides:
+    deploy__trigger_deploy: { hourly: 10, burst: 2 }
+    chaos__run_experiment: { hourly: 5, burst: 1 }
+
+# Tool-level RBAC (fnmatch patterns against the *namespaced* tool name).
+# Server-level access is controlled by each server's allowed_teams below.
+rbac_rules:
+  sre-team: ["*"]
+  security: ["*"]
+  dev-team: ["runbooks__*", "incidents__get_*", "incidents__search_*"]
+  "*": ["runbooks__search_runbooks"]
+
+servers:
+  - name: runbooks
+    namespace: runbooks
+    transport: stdio
+    command: python
+    args: ["-m", "runbooks_mcp_server"]
+    env:
+      RUNBOOK_INDEX_PATH: /var/lib/mcp/runbook-index.json
+    allowed_teams: ["*"]
+    description: Runbook search and retrieval
+    health_check_interval_seconds: 30
+
+  - name: incidents
+    namespace: incidents
+    transport: sse
+    url: http://incident-mcp.internal:8080/sse
+    headers:
+      X-Internal-Client: mcp-gateway
+    allowed_teams: [sre-team, dev-team]
+    description: Incident search, stats, and postmortem drafting
+    request_timeout_seconds: 60
+
+  - name: deploys
+    namespace: deploy
+    transport: streamable-http
+    url: https://deploy-mcp.internal/mcp
+    allowed_teams: [sre-team]
+    description: Deployment tracker and rollout controls
+
+  - name: chaos
+    namespace: chaos
+    transport: stdio
+    command: /opt/chaos-mcp/bin/server
+    allowed_teams: [sre-team]
+    enabled: false          # registered but dark-launched
+    description: Chaos experiment runner

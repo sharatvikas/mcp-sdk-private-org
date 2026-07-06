@@ -178,6 +178,24 @@ class ToolRegistry:
         """Return the set of all registered tool names."""
         return set(self._tool_index.keys())
 
+    # ------------------------------------------------------------------
+    # Async facade (used by the gateway's MCP handlers)
+    # ------------------------------------------------------------------
+
+    async def get_all_tools(self) -> list[Tool]:
+        """Async facade over all_tools() for the gateway's list_tools handler."""
+        return self.all_tools()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        """Dispatch a tool call to the handler that owns *name*.
+
+        Raises KeyError if no registered handler owns the tool.
+        """
+        handler = self.get_handler(name)
+        if handler is None:
+            raise KeyError(f"Unknown tool: {name!r} (registered: {sorted(self.tool_names()) or 'none'})")
+        return await handler.call(name, arguments)
+
     def __len__(self) -> int:
         return len(self._tool_index)
 
