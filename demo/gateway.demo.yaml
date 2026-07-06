@@ -1,0 +1,45 @@
+# Demo gateway config — one file drives the whole federation gateway.
+#
+# Consumed by GatewayProxy.from_config(). run_demo.py substitutes the
+# __DEMO_DIR__ placeholder with the absolute path to this demo/ directory
+# so the config is location-independent and re-runnable.
+
+gateway:
+  name: demo-org-gateway
+  # Separator between the downstream namespace and its local tool name:
+  #   runbooks__search_runbooks -> server "runbooks", tool "search_runbooks"
+  namespace_separator: "__"
+  hot_reload_interval_seconds: 30
+
+# Token-bucket rate limits (per principal, per namespaced tool).
+# search_runbooks is deliberately tiny so the demo can exhaust it quickly.
+rate_limits:
+  default_hourly: 1000
+  default_burst: 50
+  tool_overrides:
+    runbooks__search_runbooks:
+      hourly: 5
+      burst: 0
+
+# Team -> allowed tool-name patterns (fnmatch). Most specific wins; "*" is all.
+rbac_rules:
+  sre-team: ["*"]                 # SRE can call every tool on every server
+  dev-team: ["runbooks__*"]       # Dev can only touch runbook tools
+
+# Downstream MCP servers behind the gateway. Both are stdio subprocesses.
+servers:
+  - name: runbooks
+    namespace: runbooks
+    transport: stdio
+    command: python
+    args: ["__DEMO_DIR__/downstreams/runbooks_server.py"]
+    allowed_teams: [sre-team, dev-team]
+    description: "SRE runbook library"
+
+  - name: metrics
+    namespace: metrics
+    transport: stdio
+    command: python
+    args: ["__DEMO_DIR__/downstreams/metrics_server.py"]
+    allowed_teams: [sre-team]      # dev-team is blocked at the server gate
+    description: "Metrics query service"
