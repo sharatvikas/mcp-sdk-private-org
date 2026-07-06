@@ -30,6 +30,11 @@ jobs:
           AUTH_MODE: apikey
           TOOL_RULES: '{"*":["*"]}'
 
+      - name: Verify wheel build & non-editable install
+        run: |
+          uv build
+          uv run --isolated --no-project --with dist/*.whl python -c "import mcp_org; from mcp_org.registry.loader import ToolRegistry; r = ToolRegistry(); r.load_builtins(); print('wheel import + builtin discovery OK', mcp_org.__version__)"
+
       - name: Lint
         run: uv run ruff check src/ tests/
 
