@@ -236,7 +236,11 @@ class HealthServer:
     def __init__(self, gateway: Any | None = None) -> None:
         self._gateway = gateway
 
-    async def start(self, host: str = "0.0.0.0", port: int = 8080) -> None:
+    async def start(
+        self,
+        host: str = "0.0.0.0",  # nosec B104 - health/metrics server binds all interfaces so probes reach it inside containers
+        port: int = 8080,
+    ) -> None:
         server = await asyncio.start_server(
             self._handle_connection, host, port
         )
