@@ -275,6 +275,18 @@ A fully-featured example server with these tools pre-built:
 
 ---
 
+## Try it locally
+
+A self-contained, one-command demo proves the federation gateway (`GatewayProxy`) works end-to-end on localhost — no cloud, no bound network ports, everything over stdio subprocesses:
+
+```bash
+./demo/run_demo.sh
+```
+
+It boots the gateway with two real downstream MCP servers and walks the full request path: the RBAC-filtered aggregate catalog, routed tool calls proxied to each downstream, the token-bucket rate limiter rejecting with a structured `rate_limited` error, an RBAC denial, and the structured JSON audit log. See [`demo/OUTPUT.md`](demo/OUTPUT.md) for a captured real run and [`demo/README.md`](demo/README.md) for how it maps to the codebase.
+
+---
+
 ## Deployment Options
 
 ### Option 1: Kubernetes (recommended for orgs)
