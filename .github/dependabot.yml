@@ -1,0 +1,29 @@
+# Dependency updates. Patch and minor updates arrive grouped per ecosystem and merge
+# themselves once CI passes (.github/workflows/dependabot-auto-merge.yml); each major
+# update gets its own PR for a human to review.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # New releases wait a few days before Dependabot proposes them, so a bad or
+    # compromised release is usually pulled before it can auto-merge.
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # New releases wait a few days before Dependabot proposes them, so a bad or
+    # compromised release is usually pulled before it can auto-merge.
+    cooldown:
+      default-days: 3
+    groups:
+      pip-minor-and-patch:
+        update-types: [minor, patch]
