@@ -1,0 +1,76 @@
+# Approves and squash-merges Dependabot patch and minor updates once every other
+# check on the PR has passed. Major updates are left open for review. It does not
+# rely on branch protection (unavailable on private repos on the free plan): it
+# waits for the checks itself, and refuses to merge a PR that has no other checks.
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Dependabot auto-merge
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Read the update
+        id: meta
+        uses: dependabot/fetch-metadata@v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Leave major updates for review
+        if: steps.meta.outputs.update-type != 'version-update:semver-patch' && steps.meta.outputs.update-type != 'version-update:semver-minor'
+        run: echo "::notice::${{ steps.meta.outputs.update-type }} for ${{ steps.meta.outputs.dependency-names }} needs a human review."
+
+      - name: Wait for the other checks to pass
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          SELF: Dependabot auto-merge
+        run: |
+          start=$SECONDS
+          while :; do
+            checks=$(gh pr checks "$PR_URL" --json name,bucket 2>/dev/null || echo '[]')
+            others=$(jq -c --arg self "$SELF" '[.[] | select(.name != $self)]' <<<"$checks")
+            total=$(jq length <<<"$others")
+            pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$others")
+            failed=$(jq -r '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' <<<"$others")
+            if [ -n "$failed" ]; then
+              echo "::error::Not merging: failed checks: $failed"
+              exit 1
+            fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              echo "All $total other checks passed or were skipped."
+              break
+            fi
+            if [ "$total" -eq 0 ] && [ $((SECONDS - start)) -gt 300 ]; then
+              echo "::error::Not merging: no other checks ran on this PR, so nothing verified the update."
+              exit 1
+            fi
+            if [ $((SECONDS - start)) -gt 4200 ]; then
+              echo "::error::Not merging: checks still pending after 70 minutes."
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Approve and merge
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL" --body "Auto-approved: ${{ steps.meta.outputs.update-type }} update and every other check passed."
+          gh pr merge --squash --delete-branch "$PR_URL"
